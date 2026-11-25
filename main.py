@@ -53,11 +53,10 @@ except Exception as e:
 
 # 2. KO'P MODELLI AI MIYA (AVTO-FALLBACK VA ROUTING)
 FREE_MODELS = [
-    "gemini/gemini-2.5-flash",
-    "openrouter/deepseek/deepseek-r1:free",
-    "openrouter/meta-llama/llama-3.3-70b-instruct:free",
-    "openrouter/qwen/qwen-2.5-coder-32b-instruct:free"
+        "openrouter/openrouter/free",
 ]
+
+
 
 def ask_ai_brain(messages, preferred_model="auto"):
     models_to_try = FREE_MODELS if preferred_model == "auto" else [preferred_model] + FREE_MODELS
