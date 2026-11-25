@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+litellm
+psycopg2-binary
+pgvector
+upstash-redis
+duckduckgo-search
+httpx
+PyGithub
+bandit
+pytest
+pydantic
