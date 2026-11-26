@@ -1,118 +1,300 @@
-import os, io, re, json, asyncio, subprocess, tempfile, psycopg2
-from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, StreamingResponse
-from litellm import acompletion
+import os
+import io
+import json
+import base64
+import asyncio
+import contextlib
+import traceback
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import litellm
 from duckduckgo_search import DDGS
-from pypdf import PdfReader
-from docx import Document
+import pypdf
+import docx
 import openpyxl
 
-app = FastAPI()
-G_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-O_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
-DB = os.environ.get("DATABASE_URL", "").strip()
-SYS = "Sen samimiy, aqlli o'zbek tilidagi yordamchisan. Muhim joylarni **qalin** qil. Hisob-kitob uchun [PY]kod[/PY] yoz."
+app = FastAPI(title="Super-Agent AI")
 
-def db(sql, p=(), f=False):
-    if not DB: return [] if f else None
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+if GEMINI_API_KEY:
+    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+if OPENROUTER_API_KEY:
+    os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY
+
+MODELS = [
+    "gemini/gemini-2.5-flash",
+    "gemini/gemini-2.0-flash",
+    "openrouter/google/gemma-3-27b-it:free",
+    "openrouter/openrouter/free"
+]
+
+SYSTEM_PROMPT = """Sen «Super-Agent» (Shaxsiy Super-Ong) — foydalanuvchining 24/7 ishlaydigan aqlli shaxsiy AI yordamchisisiz.
+Asosiy vazifalaring:
+1. Foydalanuvchi bilan tabiiy, ravon va samimiy o'zbek tilida muloqot qilish.
+2. Logistika (yuk tashish, marshrutlar, hisob-kitoblar, jadvallar, hujjatlar), dasturlash, tahlil va kundalik rejalashtirishda professional yordam berish.
+3. Agar foydalanuvchi hisob-kitob, ma'lumot tahlili yoki kod yozishni so'rasa, aniq va tushunarli yechim taqdim etish.
+4. Qisqa, lo'nda, foydali va amaliy javob berish."""
+
+
+def get_db_connection():
+    if not DATABASE_URL:
+        return None
     try:
-        c = psycopg2.connect(DB)
-        with c:
-            with c.cursor() as cur:
-                cur.execute(sql, p); res = cur.fetchall() if f else None
-        c.close(); return res
-    except Exception: return [] if f else None
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return conn
+    except Exception as e:
+        print("DB ulanish xatosi:", e)
+        return None
 
-db("CREATE TABLE IF NOT EXISTS mind_chat (id SERIAL PRIMARY KEY, role TEXT, content TEXT);")
 
-def read_f(n, b):
-    e = n.lower().split(".")[-1]
+def init_db():
+    conn = get_db_connection()
+    if not conn:
+        return
     try:
-        if e == "pdf": return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(b)).pages)[:9000]
-        if e == "docx": return "\n".join(p.text for p in Document(io.BytesIO(b)).paragraphs)[:9000]
-        if e == "xlsx":
-            wb = openpyxl.load_workbook(io.BytesIO(b), data_only=True)
-            return "\n".join(" | ".join(str(x) for x in r if x is not None) for s in wb.sheetnames[:2] for r in list(wb[s].iter_rows(values_only=True))[:45])[:9000]
-        return b.decode("utf-8", errors="ignore")[:9000]
-    except Exception as ex: return str(ex)
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    role VARCHAR(20) NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS long_term_memory (
+                    id SERIAL PRIMARY KEY,
+                    fact TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+        conn.commit()
+    except Exception as e:
+        print("DB jadval yaratish xatosi:", e)
+    finally:
+        conn.close()
 
-@app.get("/health")
-async def health():
-    return {"gemini_key": bool(G_KEY), "openrouter_key": bool(O_KEY), "db": bool(DB)}
 
-@app.post("/api/chat")
-async def chat(message: str = Form(""), image: str = Form(""), file: Optional[UploadFile] = File(None)):
-    t = message.strip()
-    fc = f"\nFayl ({file.filename}):\n{read_f(file.filename, await file.read())}" if file and file.filename else ""
-    db("INSERT INTO mind_chat (role, content) VALUES (%s, %s);", ("user", t or "Fayl/Rasm"))
-    async def gen():
-        full = ""
-        try:
-            if image:
-                msgs = [{"role":"system","content":SYS},{"role":"user","content":[{"type":"text","text":t or "Rasmni tahlil qil"},{"type":"image_url","image_url":{"url":image}}]}]
-            else:
-                w = ""
-                if len(t.split()) > 2 and any(k in t.lower() for k in ["bugun","narx","kurs","ob-havo","yangilik","2025","2026","kim","qayerda"]):
-                    try: w = "\nInternet:\n" + "\n".join(r.get("body","") for r in DDGS().text(t, max_results=3))
-                    except Exception: pass
-                hist = [{"role":r,"content":c} for r,c in reversed(db("SELECT role, content FROM mind_chat ORDER BY id DESC LIMIT 6;", f=True) or [])]
-                msgs = [{"role":"system","content":SYS+w+fc}] + hist
-            models = ([("gemini/gemini-2.5-flash", G_KEY), ("gemini/gemini-2.0-flash", G_KEY)] if G_KEY else []) + ([("openrouter/openrouter/free", O_KEY), ("openrouter/google/gemma-3-27b-it:free", O_KEY)] if O_KEY else [])
-            ok = False; last_err = ""
-            for m, k in models:
-                try:
-                    resp = await acompletion(model=m, messages=msgs, api_key=k, stream=True, timeout=25)
-                    async for ch in resp:
-                        d = (ch.choices[0].delta.content or "") if getattr(ch, "choices", None) else ""
-                        if d: ok = True; full += d; yield f"data: {json.dumps({'t': d})}\n\n"
-                    if ok: break
-                except Exception as ex:
-                    last_err = str(ex)
-                    if ok: break
-            if not ok:
-                yield f"data: {json.dumps({'t': f'⚠️ Xato: {last_err or \"API kalit topilmadi\"}'})}\n\ndata: [DONE]\n\n"; return
-            pm = re.search(r"\[PY\](.*?)\[/PY\]", full, re.S)
-            if pm:
-                with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
-                    tf.write(pm.group(1).strip()); p = tf.name
-                r = subprocess.run(["python3", p], capture_output=True, text=True, timeout=5); os.remove(p)
-                ex = "\n\n✅ **Natija:** " + (r.stdout or r.stderr).strip()[:1000]
-                full += ex; yield f"data: {json.dumps({'t': ex})}\n\n"
-            db("INSERT INTO mind_chat (role, content) VALUES (%s, %s);", ("assistant", full))
-        except Exception as e:
-            yield f"data: {json.dumps({'t': f'⚠️ {e}'})}\n\n"
-        yield "data: [DONE]\n\n"
-    return StreamingResponse(gen(), media_type="text/event-stream")
+init_db()
+
+
+def save_message(role: str, content: str):
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO chat_history (role, content) VALUES (%s, %s)",
+                (role, content)
+            )
+        conn.commit()
+    except Exception as e:
+        print("Xabar saqlash xatosi:", e)
+    finally:
+        conn.close()
+
+
+def get_recent_messages(limit: int = 16):
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT role, content FROM chat_history ORDER BY id DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            return list(reversed(rows))
+    except Exception as e:
+        print("Tarixni o'qish xatosi:", e)
+        return []
+    finally:
+        conn.close()
+
+
+def web_search(query: str, max_results: int = 4) -> str:
+    try:
+        results_text = []
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            for r in results:
+                title = r.get("title", "")
+                body = r.get("body", "")
+                href = r.get("href", "")
+                results_text.append(f"- {title}: {body} ({href})")
+        return "\n".join(results_text) if results_text else ""
+    except Exception as e:
+        print("Qidiruv xatosi:", e)
+        return ""
+
+
+def parse_uploaded_file(filename: str, file_bytes: bytes) -> dict:
+    ext = filename.lower().split(".")[-1] if "." in filename else ""
+    if ext in ["png", "jpg", "jpeg", "webp"]:
+        b64 = base64.b64encode(file_bytes).decode("utf-8")
+        mime = "image/png" if ext == "png" else "image/jpeg"
+        return {"type": "image", "data": f"data:{mime};base64,{b64}", "name": filename}
+    
+    extracted_text = ""
+    try:
+        if ext == "pdf":
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            for page in reader.pages:
+                extracted_text += (page.extract_text() or "") + "\n"
+        elif ext in ["docx", "doc"]:
+            doc = docx.Document(io.BytesIO(file_bytes))
+            extracted_text = "\n".join([p.text for p in doc.paragraphs])
+        elif ext in ["xlsx", "xls"]:
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            for sheet in wb.sheetnames:
+                ws = wb[sheet]
+                extracted_text += f"\n--- Varaq: {sheet} ---\n"
+                for row in ws.iter_rows(values_only=True):
+                    row_vals = [str(cell) if cell is not None else "" for cell in row]
+                    if any(row_vals):
+                        extracted_text += " | ".join(row_vals) + "\n"
+        else:
+            extracted_text = file_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        extracted_text = f"Faylni o'qishda xatolik: {str(e)}"
+        
+    return {"type": "text", "data": extracted_text[:15000], "name": filename}
+
 
 @app.get("/api/history")
-async def history():
-    return {"messages": [{"role":r,"content":c} for r,c in reversed(db("SELECT role, content FROM mind_chat ORDER BY id DESC LIMIT 25;", f=True) or [])]}
+async def api_history():
+    return {"messages": get_recent_messages(30)}
+
 
 @app.post("/api/clear")
-async def clear():
-    db("DELETE FROM mind_chat;"); return {"ok": 1}
+async def api_clear():
+    conn = get_db_connection()
+    if conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_history")
+            conn.commit()
+        finally:
+            conn.close()
+    return {"status": "ok"}
 
-HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Super-Agent</title>
-<script src="https://jsdelivr.net"></script>
-<style>*{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif}body{background:radial-gradient(circle at 50% 100%,#0f1d3a 0%,#05070c 60%,#000 100%);color:#e2e8f0;display:flex;flex-direction:column;height:100dvh}header{padding:14px 18px;display:flex;justify-content:space-between;align-items:center}.btn{background:#12254a;color:#a8c7fa;border:none;padding:7px 14px;border-radius:20px}#chat{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}.star{margin:auto}.user{align-self:flex-end;background:#1b2436;padding:11px 15px;border-radius:18px;max-width:85%}.ai{align-self:flex-start;width:100%;line-height:1.6}.dock{padding:10px 14px 18px}.pill{background:#141923;border:1px solid #222a3a;border-radius:30px;padding:6px 10px;display:flex;align-items:center;gap:8px}input{flex:1;background:transparent;border:none;color:#fff;font-size:16px;outline:none}.ib{background:none;border:none;color:#cbd5e1;font-size:18px}.live{background:#12254a;color:#a8c7fa;border:none;width:38px;height:38px;border-radius:50%}.live.on{background:#ef4444;color:#fff}</style></head><body>
-<header><b>✦ Super-Agent</b><button class="btn" onclick="clr()">Новый чат</button></header><div id="chat"></div>
-<div class="dock"><div class="pill"><input type="file" id="fi" accept="image/*" hidden onchange="hi(event)"><input type="file" id="ff" accept=".pdf,.docx,.xlsx,.txt" hidden onchange="hf(event)"><button class="ib" onclick="fi.click()">📷</button><button class="ib" onclick="ff.click()">📎</button><input id="ip" placeholder="Спросить ..." onkeydown="if(event.key==='Enter')sn()"><button class="ib" onclick="mic()">🎙️</button><button class="live" id="ab" onclick="onA()">ıll</button></div></div>
-<script>let img=null,doc=null,rc=null,lv=false;
-function star(){chat.innerHTML='<div class="star"><svg width="46" height="46" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="48" y2="48"><stop offset="0%" stop-color="#4285f4"/><stop offset="40%" stop-color="#9b72cb"/><stop offset="70%" stop-color="#d96570"/><stop offset="100%" stop-color="#f4b400"/></linearGradient></defs><path d="M24 2C24 14.5 33.5 24 46 24C33.5 24 24 33.5 24 46C24 33.5 14.5 24 2 24C14.5 24 24 14.5 24 2Z" fill="url(#g)"/></svg></div>'}
-function spk(t,cb){try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t.replace(/[*#`]/g,""));u.lang="uz-UZ";u.onend=cb;u.onerror=cb;speechSynthesis.speak(u)}catch(e){if(cb)cb()}}
-function onA(){if(ip.value.trim()||img||doc)sn();else{lv=!lv;ab.classList.toggle("on",lv);if(lv)mic();else{if(rc)rc.stop();speechSynthesis.cancel()}}}
-function add(r,t){const s=chat.querySelector('.star');if(s)s.remove();const d=document.createElement("div");d.className=r==="user"?"user":"ai";d.innerHTML=r==="user"?t:marked.parse(t||"...");chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
-function hi(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=v=>img=v.target.result;r.readAsDataURL(f)}
-function hf(e){doc=e.target.files[0]}
-function mic(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return;rc=new SR();rc.lang="uz-UZ";rc.onend=()=>{if(lv&&ip.value.trim())sn()};rc.onresult=e=>ip.value=e.results[0][0].transcript;rc.start()}
-async function ld(){const d=await(await fetch("/api/history")).json();chat.innerHTML="";if(d.messages&&d.messages.length)d.messages.forEach(m=>add(m.role,m.content));else star()}
-async function sn(){const t=ip.value.trim();if(!t&&!img&&!doc)return;const fd=new FormData();fd.append("message",t);if(img)fd.append("image",img);if(doc)fd.append("file",doc);ip.value="";img=null;doc=null;add("user",t||"📎 Fayl");const d=add("assistant","...");let a="";const res=await fetch("/api/chat",{method:"POST",body:fd});const rd=res.body.getReader(),dc=new TextDecoder();while(true){const{done,value}=await rd.read();if(done)break;for(const l of dc.decode(value).split("\n"))if(l.startsWith("data: ")){const p=l.slice(6);if(p==="[DONE]")break;try{const j=JSON.parse(p);if(j.t){a+=j.t;d.innerHTML=marked.parse(a);chat.scrollTop=chat.scrollHeight}}catch(e){}}}if(lv&&a)spk(d.innerText,()=>{if(lv)mic()})}
-async function clr(){await fetch("/api/clear",{method:"POST"});star()}ld();</script></body></html>"""
 
-@app.get("/", response_class=HTMLResponse)
-async def home(): return HTML
+@app.post("/api/run_python")
+async def api_run_python(code: str = Form(...)):
+    output_buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output_buffer):
+            exec_globals = {}
+            exec(code, exec_globals)
+        result = output_buffer.getvalue()
+        return {"status": "ok", "output": result if result else "Kod muvaffaqiyatli bajarildi (natija chop etilmadi)."}
+    except Exception:
+        return {"status": "error", "output": traceback.format_exc()}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
+@app.post("/api/chat")
+async def api_chat(
+    message: str = Form(""),
+    use_search: str = Form("false"),
+    file: Optional[UploadFile] = File(None)
+):
+    file_info = None
+    if file and file.filename:
+        raw_bytes = await file.read()
+        file_info = parse_uploaded_file(file.filename, raw_bytes)
+
+    search_context = ""
+    if use_search.lower() == "true" and message.strip():
+        search_res = web_search(message)
+        if search_res:
+            search_context = f"\n\n[Internet qidiruv natijalari]:\n{search_res}"
+
+    user_display_text = message.strip()
+    if file_info:
+        user_display_text += f" [Fayl: {file_info['name']}]"
+
+    if user_display_text:
+        save_message("user", user_display_text)
+
+    history = get_recent_messages(12)
+    messages_payload = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    for msg in history[:-1]:
+        messages_payload.append({"role": msg["role"], "content": msg["content"]})
+
+    final_prompt = message.strip() + search_context
+    if file_info:
+        if file_info["type"] == "text":
+            final_prompt += f"\n\n[Yuklangan fayl ({file_info['name']}) mazmuni]:\n{file_info['data']}"
+            messages_payload.append({"role": "user", "content": final_prompt})
+        elif file_info["type"] == "image":
+            messages_payload.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": final_prompt or "Ushbu rasmni tahlil qilib ber."},
+                    {"type": "image_url", "image_url": {"url": file_info["data"]}}
+                ]
+            })
+    else:
+        messages_payload.append({"role": "user", "content": final_prompt})
+
+    async def response_generator():
+        full_reply = ""
+        success = False
+
+        for model_name in MODELS:
+            try:
+                response = await litellm.acompletion(
+                    model=model_name,
+                    messages=messages_payload,
+                    stream=True,
+                    temperature=0.7
+                )
+                async for chunk in response:
+                    if hasattr(chunk, "choices") and len(chunk.choices) > 0:
+                        delta = chunk.choices[0].delta
+                        content = getattr(delta, "content", None)
+                        if content:
+                            full_reply += content
+                            yield f"data: {json.dumps({'text': content})}\n\n"
+                success = True
+                break
+            except Exception as e:
+                print(f"Model {model_name} xatosi:", str(e))
+                continue
+
+        if not success:
+            err_msg = "Kechirasiz, barcha AI modellarida vaqtinchalik uzilish yuz berdi. API kalitlarni tekshiring."
+            full_reply = err_msg
+            yield f"data: {json.dumps({'text': err_msg})}\n\n"
+
+        if full_reply.strip():
+            save_message("assistant", full_reply)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(response_generator(), media_type="text/event-stream")
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
