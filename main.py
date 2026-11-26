@@ -37,8 +37,8 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 PRIMARY_MODELS = [
-    "gemini/gemini-2.5-flash",
-    "gemini/gemini-2.0-flash",
+    "gemini/gemini-3.8-flash",
+    "gemini/gemini-3.8-flash",
 ]
 
 FALLBACK_MODELS = [
@@ -142,6 +142,10 @@ def initialize_database():
                         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+
+                cursor.execute(
+                    "ALTER TABLE mind_chat ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"
+                )
 
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS mind_chat_created_idx
@@ -581,7 +585,7 @@ async def create_ai_response(messages, stream=True):
 
 async def create_explanation(code: str, output: str):
     """
-    Explain Python execution output using Gemini 2.5 Flash.
+    Explain Python execution output using Gemini 3.8 Flash.
     """
 
     if not GEMINI_API_KEY:
@@ -610,7 +614,7 @@ async def create_explanation(code: str, output: str):
         configure_model_environment(PRIMARY_MODELS[0])
 
         r2 = await litellm.acompletion(
-            model="gemini/gemini-2.5-flash",
+            model="gemini/gemini-3.8-flash",
             messages=messages,
             stream=False,
             temperature=0.3,
@@ -1843,9 +1847,126 @@ function addUserMessage(text, image) {
     scrollBottom();
 }
 
-function createAIMessage() {
-    emptyState.style.display = "none";
 
+// ============================================================
+// MOBILE SPEECH SYNTHESIS VOICE SELECTION
+// ============================================================
+
+function getBestUzbekVoice() {
+    const voices = window.speechSynthesis.getVoices();
+
+    if (!voices || voices.length === 0) {
+        return null;
+    }
+
+    let selectedVoice = voices.find(voice =>
+        voice.lang &&
+        voice.lang.toLowerCase().startsWith("uz")
+    );
+
+    if (!selectedVoice) {
+        selectedVoice = voices.find(voice =>
+            voice.lang &&
+            voice.lang.toLowerCase().startsWith("tr")
+        );
+    }
+
+    if (!selectedVoice) {
+        selectedVoice = voices.find(voice =>
+            voice.lang &&
+            voice.lang.toLowerCase().startsWith("ru")
+        );
+    }
+
+    if (!selectedVoice) {
+        selectedVoice = voices[0];
+    }
+
+    return selectedVoice;
+}
+
+
+function unlockMobileSpeech() {
+    try {
+        const unlockUtterance = new SpeechSynthesisUtterance("");
+
+        unlockUtterance.volume = 0;
+
+        window.speechSynthesis.speak(unlockUtterance);
+
+    } catch (error) {
+        console.warn("Speech audio unlock failed:", error);
+    }
+}
+
+
+function speakText(text) {
+    return new Promise(resolve => {
+        if (!text || !window.speechSynthesis) {
+            resolve();
+            return;
+        }
+
+        const synth = window.speechSynthesis;
+
+        synth.cancel();
+
+        const cleanText = text
+            .replace(/```[\s\S]*?```/g, "Kod mavjud.")
+            .replace(/[#*`_~]/g, "")
+            .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+            .replace(/\[PY\]/g, "")
+            .replace(/\[\/PY\]/g, "")
+            .trim()
+            .slice(0, 12000);
+
+        if (!cleanText) {
+            resolve();
+            return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+
+        const voices = synth.getVoices();
+
+        let selectedVoice = getBestUzbekVoice();
+
+        if (selectedVoice) {
+            utterance.voice = selectedVoice;
+            utterance.lang = selectedVoice.lang;
+        } else {
+            utterance.lang = "ru-RU";
+        }
+
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+
+        utterance.onend = () => {
+            resolve();
+        };
+
+        utterance.onerror = event => {
+            console.warn("Speech synthesis error:", event.error);
+            resolve();
+        };
+
+        try {
+            synth.speak(utterance);
+
+            if (synth.paused) {
+                synth.resume();
+            }
+
+        } catch (error) {
+            console.error("Speech synthesis failed:", error);
+            resolve();
+        }
+    });
+}
+
+
+function createAIMessage() {
     const wrapper = document.createElement("div");
     wrapper.className = "message ai-message";
 
@@ -1871,19 +1992,16 @@ function createAIMessage() {
 
     let fullText = "";
 
-    readButton.onclick = () => {
+    readButton.onclick = async () => {
         if (!fullText) return;
 
-        speechSynthesis.cancel();
+        unlockMobileSpeech();
 
-        const utterance = new SpeechSynthesisUtterance(
-            fullText.replace(/[#*`]/g, "")
-        );
+        readButton.textContent = "🔊 O'qilmoqda...";
 
-        utterance.lang = "uz-UZ";
-        utterance.rate = 1;
+        await speakText(fullText);
 
-        speechSynthesis.speak(utterance);
+        readButton.textContent = "🔊 Ovoz chiqarish";
     };
 
     copyButton.onclick = async () => {
@@ -2076,6 +2194,10 @@ async function sendMessage(voiceTriggered = false) {
         isSending = false;
         currentAbortController = null;
         scrollBottom();
+
+        if (voiceTriggered && liveVoice && !isSpeaking) {
+            scheduleVoiceRestart();
+        }
     }
 }
 
@@ -2274,53 +2396,30 @@ function scheduleVoiceRestart() {
     }, 700);
 }
 
-function speakAndContinue(text) {
-    return new Promise(resolve => {
-        if (!liveVoice) {
-            resolve();
-            return;
+
+async function speakAndContinue(text) {
+    if (!liveVoice) return;
+
+    isSpeaking = true;
+
+    setStatus("🔊 Javobni ovoz chiqarib aytyapman...");
+
+    try {
+        await speakText(text);
+
+    } catch (error) {
+        console.error("Live speech error:", error);
+
+    } finally {
+        isSpeaking = false;
+
+        if (liveVoice) {
+            setStatus("🎙️ Keyingi savolingizni tinglayapman...");
+            scheduleVoiceRestart();
         }
-
-        isSpeaking = true;
-
-        setStatus("🔊 Javobni ovoz chiqarib aytyapman...");
-
-        const cleanText = text
-            .replace(/```[\s\S]*?```/g, "Kod mavjud.")
-            .replace(/[#*`_~]/g, "")
-            .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-            .slice(0, 12000);
-
-        const utterance = new SpeechSynthesisUtterance(
-            cleanText
-        );
-
-        utterance.lang = "uz-UZ";
-        utterance.rate = 1;
-        utterance.pitch = 1;
-
-        utterance.onend = () => {
-            isSpeaking = false;
-            resolve();
-
-            if (liveVoice) {
-                scheduleVoiceRestart();
-            }
-        };
-
-        utterance.onerror = () => {
-            isSpeaking = false;
-            resolve();
-
-            if (liveVoice) {
-                scheduleVoiceRestart();
-            }
-        };
-
-        speechSynthesis.cancel();
-        speechSynthesis.speak(utterance);
-    });
+    }
 }
+
 
 function startLiveVoice() {
     if (!SpeechRecognition) {
@@ -2338,6 +2437,10 @@ function startLiveVoice() {
 
     voiceButton.classList.add("active");
 
+    // Android Chrome mobile audio unlock:
+    // Speak an empty utterance directly inside the click event.
+    unlockMobileSpeech();
+
     setStatus("Live Voice faol. Sizni tinglayapman...");
 
     try {
@@ -2346,6 +2449,7 @@ function startLiveVoice() {
         scheduleVoiceRestart();
     }
 }
+
 
 function stopLiveVoice() {
     liveVoice = false;
@@ -2368,6 +2472,7 @@ function stopLiveVoice() {
 
     setStatus("Live Voice o'chirildi.");
 }
+
 
 voiceButton.onclick = () => {
     if (liveVoice) {
@@ -2420,6 +2525,23 @@ async function loadHistory() {
         console.error("History error:", error);
     }
 }
+
+
+// Load voices when Android Chrome makes them available.
+if (window.speechSynthesis) {
+    window.speechSynthesis.onvoiceschanged = () => {
+        const voices = window.speechSynthesis.getVoices();
+
+        console.log(
+            "Available speech voices:",
+            voices.map(voice => ({
+                name: voice.name,
+                lang: voice.lang
+            }))
+        );
+    };
+}
+
 
 window.addEventListener("beforeunload", () => {
     if (currentAbortController) {
@@ -2838,4 +2960,4 @@ if __name__ == "__main__":
         access_log=True,
         proxy_headers=True,
         forwarded_allow_ips="*"
-        )
+)
