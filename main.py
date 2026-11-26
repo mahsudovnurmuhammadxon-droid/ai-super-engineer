@@ -83,7 +83,7 @@ async def chat(message: str = Form(""), image: str = Form(""), file: Optional[Up
     for m, k in models:
         try:
             resp = await acompletion(model=m, messages=msgs, api_key=k, timeout=30)
-            reply = (resp.choices[0].message.content or "").strip()
+            reply = (resp.choices.message.content or "").strip()
             if reply:
                 break
         except Exception as ex:
@@ -124,25 +124,97 @@ async def clear():
 HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Super-Ong</title>
 <script src="https://jsdelivr.net"></script>
 <style>*{box-sizing:border-box;margin:0;padding:0;font-family:sans-serif}body{background:radial-gradient(circle at 50% 100%,#0f1d3a 0%,#05070c 60%,#000 100%);color:#e2e8f0;display:flex;flex-direction:column;height:100dvh}header{padding:14px 18px;display:flex;justify-content:space-between;align-items:center}.btn{background:#12254a;color:#a8c7fa;border:none;padding:7px 14px;border-radius:20px;cursor:pointer}#chat{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}.star{margin:auto}.user{align-self:flex-end;background:#1b2436;padding:11px 15px;border-radius:18px;max-width:85%}.ai{align-self:flex-start;width:100%;line-height:1.6}.ai p{margin-bottom:8px}.dock{padding:10px 14px 18px}.pill{background:#141923;border:1px solid #222a3a;border-radius:30px;padding:6px 10px;display:flex;align-items:center;gap:8px}input{flex:1;background:transparent;border:none;color:#fff;font-size:16px;outline:none}.ib{background:none;border:none;color:#cbd5e1;font-size:18px;cursor:pointer}.live{background:#12254a;color:#a8c7fa;border:none;width:38px;height:38px;border-radius:50%;cursor:pointer}.live.on{background:#ef4444;color:#fff}</style></head><body>
-<header><b>✦ Super-Ong</b><button class="btn" onclick="clr()">Новый чат</button></header><div id="chat"></div>
-<div class="dock"><div class="pill"><input type="file" id="fi" accept="image/*" hidden onchange="hi(event)"><input type="file" id="ff" accept=".pdf,.docx,.xlsx,.txt,.py" hidden onchange="hf(event)"><button class="ib" onclick="fi.click()">📷</button><button class="ib" onclick="ff.click()">📎</button><input id="ip" placeholder="Спросить ..." oninput="onT()" onkeydown="if(event.key==='Enter')sn()"><button class="ib" onclick="mic()">🎙️</button><button class="live" id="ab" onclick="onA()">ıll</button></div></div>
-<script>let img=null,doc=null,rc=null,lv=false;
-function star(){chat.innerHTML='<div class="star"><svg width="46" height="46" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="48" y2="48"><stop offset="0%" stop-color="#4285f4"/><stop offset="40%" stop-color="#9b72cb"/><stop offset="70%" stop-color="#d96570"/><stop offset="100%" stop-color="#f4b400"/></linearGradient></defs><path d="M24 2C24 14.5 33.5 24 46 24C33.5 24 24 33.5 24 46C24 33.5 14.5 24 2 24C14.5 24 24 14.5 24 2Z" fill="url(#g)"/></svg></div>'}
-function onT(){ab.textContent=(ip.value.trim()||img||doc)?"↑":"ıll"}
-function spk(t,cb){try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t.replace(/[*#`]/g,""));u.lang="uz-UZ";u.onend=cb;u.onerror=cb;speechSynthesis.speak(u)}catch(e){if(cb)cb()}}
-function onA(){if(ip.value.trim()||img||doc)sn();else{lv=!lv;ab.classList.toggle("on",lv);if(lv)mic();else{if(rc)rc.stop();speechSynthesis.cancel()}}}
-function add(r,t){const s=chat.querySelector('.star');if(s)s.remove();const d=document.createElement("div");d.className=r==="user"?"user":"ai";d.innerHTML=r==="user"?t:marked.parse(t||"...");chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d}
-function hi(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=v=>{img=v.target.result;onT()};r.readAsDataURL(f)}
-function hf(e){doc=e.target.files[0];onT()}
-function mic(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return;rc=new SR();rc.lang="uz-UZ";rc.onend=()=>{if(lv&&ip.value.trim())sn()};rc.onresult=e=>{ip.value=e.results[0][0].transcript;onT()};rc.start()}
-async function ld(){try{const d=await(await fetch("/api/history")).json();chat.innerHTML="";if(d.messages&&d.messages.length)d.messages.forEach(m=>add(m.role,m.content));else star()}catch(e){star()}}
-async function sn(){const t=ip.value.trim();if(!t&&!img&&!doc)return;const fd=new FormData();fd.append("message",t);if(img)fd.append("image",img);if(doc)fd.append("file",doc);ip.value="";img=null;doc=null;onT();add("user",t||"📎 Fayl");const d=add("assistant","⏳ ...");try{const res=await fetch("/api/chat",{method:"POST",body:fd});const j=await res.json();d.innerHTML=marked.parse(j.reply||"Javob yo'q");chat.scrollTop=chat.scrollHeight;if(lv&&j.reply)spk(d.innerText,()=>{if(lv)mic()})}catch(e){d.textContent="⚠️ Server bilan aloqa xatosi"}}
-async function clr(){await fetch("/api/clear",{method:"POST"});star()}ld();</script></body></html>"""
+<header><b>✦ Super-Ong</b><button class="btn" id="clrBtn">Новый чат</button></header>
+<div id="chat"></div>
+<div class="dock"><div class="pill">
+<input type="file" id="fi" accept="image/*" hidden>
+<input type="file" id="ff" accept=".pdf,.docx,.xlsx,.txt,.py" hidden>
+<button class="ib" id="imgBtn">📷</button>
+<button class="ib" id="docBtn">📎</button>
+<input id="ip" placeholder="Спросить ...">
+<button class="ib" id="micBtn">🎙️</button>
+<button class="live" id="ab">ıll</button>
+</div></div>
+<script>
+const chat = document.getElementById("chat");
+const ip = document.getElementById("ip");
+const ab = document.getElementById("ab");
+const fi = document.getElementById("fi");
+const ff = document.getElementById("ff");
+let img = null, doc = null, rc = null, lv = false;
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    return HTML
+function star() {
+  chat.innerHTML = '<div class="star"><svg width="46" height="46" viewBox="0 0 48 48"><defs><linearGradient id="g" x1="0" y1="0" x2="48" y2="48"><stop offset="0%" stop-color="#4285f4"/><stop offset="40%" stop-color="#9b72cb"/><stop offset="70%" stop-color="#d96570"/><stop offset="100%" stop-color="#f4b400"/></linearGradient></defs><path d="M24 2C24 14.5 33.5 24 46 24C33.5 24 24 33.5 24 46C24 33.5 14.5 24 2 24C14.5 24 24 14.5 24 2Z" fill="url(#g)"/></svg></div>';
+}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+function onT() {
+  ab.textContent = (ip.value.trim() || img || doc) ? "↑" : "ıll";
+}
+
+function spk(t, cb) {
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(t.replace(/[*#`]/g, ""));
+    u.lang = "uz-UZ";
+    u.onend = cb;
+    u.onerror = cb;
+    speechSynthesis.speak(u);
+  } catch (e) { if (cb) cb(); }
+}
+
+function add(r, t) {
+  const s = chat.querySelector(".star");
+  if (s) s.remove();
+  const d = document.createElement("div");
+  d.className = r === "user" ? "user" : "ai";
+  if (r === "user") d.textContent = t;
+  else d.innerHTML = (typeof marked !== "undefined") ? marked.parse(t || "...") : (t || "...");
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+  return d;
+}
+
+function mic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  rc = new SR();
+  rc.lang = "uz-UZ";
+  rc.onend = () => { if (lv && ip.value.trim()) sn(); };
+  rc.onresult = (e) => { ip.value = e.results.transcript; onT(); };
+  rc.start();
+}
+
+async function ld() {
+  try {
+    const r = await fetch("/api/history");
+    const d = await r.json();
+    chat.innerHTML = "";
+    if (d.messages && d.messages.length) d.messages.forEach(m => add(m.role, m.content));
+    else star();
+  } catch (e) { star(); }
+}
+
+async function sn() {
+  const t = ip.value.trim();
+  if (!t && !img && !doc) return;
+  const fd = new FormData();
+  fd.append("message", t);
+  if (img) fd.append("image", img);
+  if (doc) fd.append("file", doc);
+  ip.value = ""; img = null; doc = null; onT();
+  add("user", t || "📎 Fayl");
+  const d = add("assistant", "⏳ ...");
+  try {
+    const res = await fetch("/api/chat", { method: "POST", body: fd });
+    const j = await res.json();
+    d.innerHTML = (typeof marked !== "undefined") ? marked.parse(j.reply || "Javob yo'q") : (j.reply || "Javob yo'q");
+    chat.scrollTop = chat.scrollHeight;
+    if (lv && j.reply) spk(d.innerText, () => { if (lv) mic(); });
+  } catch (e) { d.textContent = "⚠️ Server bilan aloqa xatosi"; }
+}
+
+ip.addEventListener("input", onT);
+ip.addEventListener("keydown", (e) => { if (e.key === "Enter") sn(); });
+document.getElementById("imgBtn").onclick = () => fi.click();
+document.getElementById("docBtn").onclick = () => ff.click();
+document.getElementById("micBtn").onclick = mic;
