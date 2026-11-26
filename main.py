@@ -147,7 +147,8 @@ async def history():
 @app.post("/api/clear")
 async def clear():
     db("DELETE FROM mind_chat;"); return {"status": "ok"}
-HTML_PAGE = r'''<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>Super-Agent</title>
+
+HTML_PAGE = r"""<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><title>Super-Agent</title>
 <script src="https://jsdelivr.net"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
@@ -182,10 +183,10 @@ textarea{flex:1;background:transparent;border:none;color:#f8fafc;font-size:16px;
 .ib{background:none;border:none;color:#cbd5e1;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
 .ib.rec{color:#ef4444;background:rgba(239,68,68,.15)}
 .live{background:#12254a;color:#a8c7fa;border:none;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
-.live.on{background:#ef4444;color:#fff;animation:pulse 1.5s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.5)}70%{box-shadow:0 0 0 12px rgba(239,68,68,0)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}}
+.live.on{background:#ef4444;color:#fff}
 </style></head><body>
-<div id="ov" onclick="tgDrawer(false)"></div>
+"""
+HTML_PAGE += r"""<div id="ov" onclick="tgDrawer(false)"></div>
 <div id="drawer"><div style="font-size:17px;font-weight:600;color:#fff">✦ Super-Agent</div><button class="db" onclick="clr()">＋ Новый чат</button><button class="db" onclick="clr()">🗑️ Очистить историю</button></div>
 <div id="plusMenu"><button class="pm" onclick="pmClose();fi.click()">📷 Загрузить фото</button><button class="pm" onclick="pmClose();ff.click()">📎 Загрузить файл (PDF/Word/Excel)</button></div>
 <header><div class="hl"><button class="menu-btn" onclick="tgDrawer(true)">☰</button><div class="brand">Super-Agent <span style="font-size:12px;color:#94a3b8">▾</span></div></div><div class="hr"><button class="plan" onclick="clr()">Новый чат</button><div class="av">N</div></div></header>
@@ -205,7 +206,7 @@ marked.setOptions({breaks:true});
 function unlockAudio(){try{const u=new SpeechSynthesisUtterance(" ");u.volume=0.01;speechSynthesis.speak(u)}catch(e){}}
 function speakText(txt,cb){try{speechSynthesis.cancel();const clean=txt.replace(/[*#`>_~]/g,"").trim();if(!clean){if(cb)cb();return}const u=new SpeechSynthesisUtterance(clean);const vs=speechSynthesis.getVoices();const v=vs.find(x=>x.lang.startsWith("uz"))||vs.find(x=>x.lang.startsWith("tr"))||vs.find(x=>x.lang.startsWith("ru"))||vs;if(v)u.voice=v;u.rate=1.02;u.onend=()=>{if(cb)cb()};u.onerror=()=>{if(cb)cb()};speechSynthesis.speak(u)}catch(e){if(cb)cb()}}
 if(typeof speechSynthesis!=="undefined")speechSynthesis.onvoiceschanged=()=>speechSynthesis.getVoices();
-function showStar(){chat.innerHTML=`<div class="center-star"><svg width="46" height="46" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="g1" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#4285f4"/><stop offset="35%" stop-color="#9b72cb"/><stop offset="70%" stop-color="#d96570"/><stop offset="100%" stop-color="#f4b400"/></linearGradient></defs><path d="M24 2C24 14.5 33.5 24 46 24C33.5 24 24 33.5 24 46C24 33.5 14.5 24 2 24C14.5 24 24 14.5 24 2Z" fill="url(#g1)"/></svg></div>`}
+function showStar(){chat.innerHTML='<div class="center-star"><svg width="46" height="46" viewBox="0 0 48 48" fill="none"><defs><linearGradient id="g1" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#4285f4"/><stop offset="35%" stop-color="#9b72cb"/><stop offset="70%" stop-color="#d96570"/><stop offset="100%" stop-color="#f4b400"/></linearGradient></defs><path d="M24 2C24 14.5 33.5 24 46 24C33.5 24 24 33.5 24 46C24 33.5 14.5 24 2 24C14.5 24 24 14.5 24 2Z" fill="url(#g1)"/></svg></div>'}
 function tgDrawer(s){drawer.classList.toggle("open",s);ov.style.display=s?"block":"none"}
 function tgPlus(){plusMenu.style.display=plusMenu.style.display==="flex"?"none":"flex"}
 function pmClose(){plusMenu.style.display="none"}
@@ -221,7 +222,7 @@ async function ld(){try{const d=await(await fetch("/api/history")).json();chat.i
 async function sn(){const t=ip.value.trim();if(!t&&!img&&!doc)return;const fd=new FormData();fd.append("message",t);if(img)fd.append("image",img);if(doc)fd.append("file",doc);ip.value="";addMsg("user",(img?"📷 ":"")+(doc?"📎 "+doc.name+" ":"")+t);rm();const aiDiv=addMsg("assistant","...");let acc="";try{const res=await fetch("/api/chat",{method:"POST",body:fd});const reader=res.body.getReader();const dec=new TextDecoder();while(true){const{done,value}=await reader.read();if(done)break;const lines=dec.decode(value).split("\n");for(const l of lines){if(l.startsWith("data: ")){const p=l.slice(6);if(p==="[DONE]")break;try{const j=JSON.parse(p);if(j.t){acc+=j.t;aiDiv._body.innerHTML=marked.parse(acc);chat.scrollTop=chat.scrollHeight}}catch(e){}}}}if(liveMode&&acc){speakText(aiDiv._body.innerText,()=>{if(liveMode)mic()})}}catch(e){aiDiv._body.textContent="Aloqa uzildi."}}
 async function clr(){tgDrawer(false);await fetch("/api/clear",{method:"POST"});showStar()}
 ip.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sn()}});
-ld();</script></body></html>'''
+ld();</script></body></html>"""
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
