@@ -12,7 +12,7 @@ app = FastAPI()
 G_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 O_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 DB = os.environ.get("DATABASE_URL", "").strip()
-SYS = "Sen samimiy, aqlli o'zbek tilidagi yordamchisan. Muhim joylarni **qalin** qil. Hisob-kitob uchun [PY]kod[/PY] yoz. Rasmdagi xira joylarni to'qima."
+SYS = "Sen samimiy, aqlli o'zbek tilidagi yordamchisan. Muhim joylarni **qalin** qil. Hisob-kitob uchun [PY]kod[/PY] yoz."
 
 def db(sql, p=(), f=False):
     if not DB: return [] if f else None
@@ -37,6 +37,10 @@ def read_f(n, b):
         return b.decode("utf-8", errors="ignore")[:9000]
     except Exception as ex: return str(ex)
 
+@app.get("/health")
+async def health():
+    return {"gemini_key": bool(G_KEY), "openrouter_key": bool(O_KEY), "db": bool(DB)}
+
 @app.post("/api/chat")
 async def chat(message: str = Form(""), image: str = Form(""), file: Optional[UploadFile] = File(None)):
     t = message.strip()
@@ -55,18 +59,19 @@ async def chat(message: str = Form(""), image: str = Form(""), file: Optional[Up
                 hist = [{"role":r,"content":c} for r,c in reversed(db("SELECT role, content FROM mind_chat ORDER BY id DESC LIMIT 6;", f=True) or [])]
                 msgs = [{"role":"system","content":SYS+w+fc}] + hist
             models = ([("gemini/gemini-2.5-flash", G_KEY), ("gemini/gemini-2.0-flash", G_KEY)] if G_KEY else []) + ([("openrouter/openrouter/free", O_KEY), ("openrouter/google/gemma-3-27b-it:free", O_KEY)] if O_KEY else [])
-            ok = False
+            ok = False; last_err = ""
             for m, k in models:
                 try:
                     resp = await acompletion(model=m, messages=msgs, api_key=k, stream=True, timeout=25)
                     async for ch in resp:
-                        d = ch.choices[0].delta.content if getattr(ch, "choices", None) else ""
+                        d = (ch.choices[0].delta.content or "") if getattr(ch, "choices", None) else ""
                         if d: ok = True; full += d; yield f"data: {json.dumps({'t': d})}\n\n"
                     if ok: break
-                except Exception:
+                except Exception as ex:
+                    last_err = str(ex)
                     if ok: break
             if not ok:
-                yield f"data: {json.dumps({'t': '⚠️ API kalitni tekshiring.'})}\n\ndata: [DONE]\n\n"; return
+                yield f"data: {json.dumps({'t': f'⚠️ Xato: {last_err or \"API kalit topilmadi\"}'})}\n\ndata: [DONE]\n\n"; return
             pm = re.search(r"\[PY\](.*?)\[/PY\]", full, re.S)
             if pm:
                 with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
