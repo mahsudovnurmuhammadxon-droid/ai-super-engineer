@@ -10,3 +10,8 @@ PyGithub
 bandit
 pytest
 pydantic
+pypdf
+python-docx
+openpyxl
+apscheduler
+python-multipart
