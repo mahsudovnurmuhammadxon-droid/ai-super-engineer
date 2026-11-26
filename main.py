@@ -218,3 +218,17 @@ ip.addEventListener("keydown", (e) => { if (e.key === "Enter") sn(); });
 document.getElementById("imgBtn").onclick = () => fi.click();
 document.getElementById("docBtn").onclick = () => ff.click();
 document.getElementById("micBtn").onclick = mic;
+document.getElementById("clrBtn").onclick = async () => { await fetch("/api/clear", { method: "POST" }); star(); };
+ab.onclick = () => { if (ip.value.trim() || img || doc) sn(); else { lv = !lv; ab.classList.toggle("on", lv); if (lv) mic(); else { if (rc) rc.stop(); speechSynthesis.cancel(); } } };
+fi.onchange = e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = v => { img = v.target.result; onT(); }; r.readAsDataURL(f); };
+ff.onchange = e => { doc = e.target.files[0]; onT(); };
+ld();
+</script></body></html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    return HTML
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
